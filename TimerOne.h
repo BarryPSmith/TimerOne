@@ -18,6 +18,8 @@
 #ifndef TimerOne_h_
 #define TimerOne_h_
 
+#define MICROS_PER_SECOND 1000000
+
 #if defined(ARDUINO) && ARDUINO >= 100
 #include "Arduino.h"
 #else
@@ -167,7 +169,7 @@ class TimerOne
   private:
     static unsigned short pwmPeriod;
     static unsigned char clockSelectBits;
-    static const byte ratio = (F_CPU)/ ( 1000000 );
+    static const byte ratio = (F_CPU)/ ( MICROS_PER_SECOND );
 	
 #elif 1 //defined(__AVR__)
 
@@ -177,22 +179,23 @@ class TimerOne
 #endif
 	
   public:
-    static constexpr unsigned long MaxMicros = (TIMER1_RESOLUTION - 1) * 1024 * 2000000 / F_CPU;
+    static constexpr unsigned long MaxMicros = (TIMER1_RESOLUTION - 1) * 1024 * MICROS_PER_SECOND / F_CPU;
     //****************************
     //  Configuration
     //****************************
     void initialize(unsigned long microseconds=1000000) __attribute__((always_inline)) {
-	TCCR1B = _BV(WGM13);        // set mode as phase and frequency correct pwm, stop the timer
+	TCCR1B = _BV(WGM12);        // set mode CTC, stop the timer
 	TCCR1A = 0;                 // clear control register A 
+	TIMSK1 = _BV(OCIE1A);
 	setPeriod(microseconds);
     }
     void setPeriod(unsigned long microseconds) __attribute__((always_inline)) {
-#if F_CPU < 2000000
+#if F_CPU < MICROS_PER_SECOND
 #error TimerOne requires F_CPU > 2Mhz
-#elif F_CPU % 2000000 != 0
+#elif F_CPU % MICROS_PER_SECOND != 0
 #warn F_CPU is not divisible by 2Mhz, TimerOne accuracy doubtful
 #endif
-	const unsigned long cycles = (F_CPU / 2000000) * microseconds;
+	const unsigned long cycles = (F_CPU / MICROS_PER_SECOND) * microseconds;
   bool setPeriod = true;
 	if (cycles < TIMER1_RESOLUTION) {
 		clockSelectBits = _BV(CS10);
@@ -222,20 +225,20 @@ class TimerOne
   if (setPeriod) {
     pwmPeriod = cycles / mult;
   }
-	ICR1 = pwmPeriod;
-	TCCR1B = _BV(WGM13) | clockSelectBits;
+	OCR1A = pwmPeriod;
+	TCCR1B = _BV(WGM12) | clockSelectBits;
     }
 
     //****************************
     //  Millis replacement
     //****************************
 
-    static unsigned int subMillis(unsigned long count) __attribute__((always_inline)) {
-      const unsigned long cyclesPerMilli = F_CPU / 2E3L;
+    static unsigned long subMillis(unsigned long count) __attribute__((always_inline)) {
+      const unsigned long cyclesPerMilli = F_CPU / 2000;
       return count * mult / cyclesPerMilli;
     }
 
-    static unsigned int subMicros(unsigned long count) __attribute__((always_inline)) {
+    static unsigned long subMicros(unsigned long count) __attribute__((always_inline)) {
       //cycles = FCPU * micros / 2E6 / mult
       //micros = mult * cycles * 2E6 / FCPU
       //FCPU is on the order of 16E6.
@@ -247,27 +250,42 @@ class TimerOne
       //F_CPU: 1E5 - 16E6 = 2^17 - 2^24
       //We could do 64 bit multiplication but it's unnecessary. The code below should be accurate enough for most purposes
       //Wrote this before I noticed the earlier condition that requires F_CPU > 2MHz.
-      #if F_CPU > 2000000
-      #if F_CPU % 2000000 != 0
+      #if F_CPU > MICROS_PER_SECOND
+      #if F_CPU % MICROS_PER_SECOND != 0
       #warning F_CPU not divisible by 2MHz, t1micros only guaranteed accurate to 1 part in 64.
       #endif
-        constexpr unsigned long n64cyclesPerMicro = (1 << 6) * F_CPU / 2000000UL;
-        return (TCNT1 * mult << 6) / n64cyclesPerMicro;
+        constexpr unsigned long n64cyclesPerMicro = (1 << 6) * F_CPU / MICROS_PER_SECOND;
+        auto k = ((unsigned long)count * mult) << 6;
+        return k / n64cyclesPerMicro;
       #else
-      #if 2000000 % F_CPU != 0
+      #if MICROS_PER_SECOND % F_CPU != 0
       #warning MHz not divisible by F_CPU, t1micros only guaranteed accurate to 1 part in 64.
       #endif
-      constexpr unsigned long n64microsPerCycle = (1 << 6) * 2000000UL / F_CPU;
-      return (count * mult * n64microsPerCycle) >> 6;
+      constexpr unsigned long n64microsPerCycle = (1 << 6) * MICROS_PER_SECONDUL / F_CPU;
+      return ((unsigned long)count * mult * n64microsPerCycle) >> 6;
     #endif
     }
 
-    static unsigned int millis() __attribute__((always_inline)) {
-      return baseMillis + subMillis(TCNT1);
+    static unsigned long millis() __attribute__((always_inline)) {
+      auto sreg = SREG;
+      unsigned long m = 0;
+      cli();
+      auto t = TCNT1;
+      if ((TIFR1 & _BV(OCF1A)) && (t < 65535))
+		    m++;
+      SREG = sreg;
+      return baseMillis + subMillis(t + (m << 16));
     }
 
-    static unsigned int micros() __attribute__((always_inline)) {
-      return baseMicros + subMicros(TCNT1);
+    static unsigned long micros() __attribute__((always_inline)) {
+      auto sreg = SREG;
+      unsigned long m = 0;
+      cli();
+      auto t = TCNT1;
+      if ((TIFR1 & _BV(OCF1A)) && (t < 65535))
+		    m++;
+      SREG = sreg;
+      return baseMicros + subMicros(t + (m << 16));
     }
 
     //****************************
@@ -279,53 +297,13 @@ class TimerOne
 	resume();
     }
     void stop() __attribute__((always_inline)) {
-	TCCR1B = _BV(WGM13);
+	TCCR1B = _BV(WGM12);
     }
     void restart() __attribute__((always_inline)) {
 	start();
     }
     void resume() __attribute__((always_inline)) {
-	TCCR1B = _BV(WGM13) | clockSelectBits;
-    }
-
-    //****************************
-    //  PWM outputs
-    //****************************
-    void setPwmDuty(char pin, unsigned int duty) __attribute__((always_inline)) {
-	unsigned long dutyCycle = pwmPeriod;
-	dutyCycle *= duty;
-	dutyCycle >>= 10;
-	if (pin == TIMER1_A_PIN) OCR1A = dutyCycle;
-	#ifdef TIMER1_B_PIN
-	else if (pin == TIMER1_B_PIN) OCR1B = dutyCycle;
-	#endif
-	#ifdef TIMER1_C_PIN
-	else if (pin == TIMER1_C_PIN) OCR1C = dutyCycle;
-	#endif
-    }
-    void pwm(char pin, unsigned int duty) __attribute__((always_inline)) {
-	if (pin == TIMER1_A_PIN) { pinMode(TIMER1_A_PIN, OUTPUT); TCCR1A |= _BV(COM1A1); }
-	#ifdef TIMER1_B_PIN
-	else if (pin == TIMER1_B_PIN) { pinMode(TIMER1_B_PIN, OUTPUT); TCCR1A |= _BV(COM1B1); }
-	#endif
-	#ifdef TIMER1_C_PIN
-	else if (pin == TIMER1_C_PIN) { pinMode(TIMER1_C_PIN, OUTPUT); TCCR1A |= _BV(COM1C1); }
-	#endif
-	setPwmDuty(pin, duty);
-	TCCR1B = _BV(WGM13) | clockSelectBits;
-    }
-    void pwm(char pin, unsigned int duty, unsigned long microseconds) __attribute__((always_inline)) {
-	if (microseconds > 0) setPeriod(microseconds);
-	pwm(pin, duty);
-    }
-    void disablePwm(char pin) __attribute__((always_inline)) {
-	if (pin == TIMER1_A_PIN) TCCR1A &= ~_BV(COM1A1);
-	#ifdef TIMER1_B_PIN
-	else if (pin == TIMER1_B_PIN) TCCR1A &= ~_BV(COM1B1);
-	#endif
-	#ifdef TIMER1_C_PIN
-	else if (pin == TIMER1_C_PIN) TCCR1A &= ~_BV(COM1C1);
-	#endif
+	TCCR1B = _BV(WGM12) | clockSelectBits;
     }
 
     //****************************
@@ -340,7 +318,7 @@ class TimerOne
 
     void attachInterrupt(void (*isr)()) __attribute__((always_inline)) {
 	isrCallback = isr;
-	TIMSK1 = _BV(TOIE1);
+	TIMSK1 = _BV(OCIE1A);
     }
     void attachInterrupt(void (*isr)(), unsigned long microseconds) __attribute__((always_inline)) {
 	if(microseconds > 0) setPeriod(microseconds);
@@ -353,12 +331,12 @@ class TimerOne
     static void isrDefaultUnused();
 
 
-  private:
+  public:
     // properties
     static unsigned short pwmPeriod;
     static unsigned short mult;
     static unsigned char clockSelectBits;
-    static unsigned long baseMillis, baseMicros;
+    static volatile unsigned long baseMillis, baseMicros;
 
 
 
@@ -389,7 +367,7 @@ class TimerOne
 	setPeriod(microseconds);
     }
     void setPeriod(unsigned long microseconds) __attribute__((always_inline)) {
-	const unsigned long cycles = (F_TIMER / 2000000) * microseconds;
+	const unsigned long cycles = (F_TIMER / 1000000) * microseconds;
   // A much faster if-else
   // This is like a binary serch tree and no more than 3 conditions are evaluated.
   // I haven't checked if this becomes significantly longer ASM than the simple ladder.

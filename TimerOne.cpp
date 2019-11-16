@@ -30,15 +30,15 @@ ISR(TIMER1_COMPA_vect)
   Timer1.isrCallback();
 }
 #elif 1 // defined(__AVR__)
-ISR(TIMER1_OVF_vect)
+ISR(TIMER1_COMPA_vect)
 {
   Timer1.isrTick();
   Timer1.isrCallback();
 }
 
 unsigned short TimerOne::mult= 0;
-unsigned long TimerOne::baseMillis = 0;
-unsigned long TimerOne::baseMicros = 0;
+volatile unsigned long TimerOne::baseMillis = 0;
+volatile unsigned long TimerOne::baseMicros = 0;
 
 
 
