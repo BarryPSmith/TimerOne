@@ -169,7 +169,7 @@ class TimerOne
     static unsigned char clockSelectBits;
     static const byte ratio = (F_CPU)/ ( 1000000 );
 	
-#elif defined(__AVR__)
+#elif 1 //defined(__AVR__)
 
 #if defined (__AVR_ATmega8__)
   //in some io definitions for older microcontrollers TIMSK is used instead of TIMSK1
@@ -186,32 +186,87 @@ class TimerOne
 	setPeriod(microseconds);
     }
     void setPeriod(unsigned long microseconds) __attribute__((always_inline)) {
-	const unsigned long cycles = ((F_CPU/100000 * microseconds) / 20);
+#if F_CPU < 2000000
+#error TimerOne requires F_CPU > 2Mhz
+#elif F_CPU % 2000000 != 0
+#warn F_CPU is not divisible by 2Mhz, TimerOne accuracy doubtful
+#endif
+	const unsigned long cycles = (F_CPU / 2000000) * microseconds;
+  bool setPeriod = true;
 	if (cycles < TIMER1_RESOLUTION) {
 		clockSelectBits = _BV(CS10);
-		pwmPeriod = cycles;
+    mult = 1;
 	} else
 	if (cycles < TIMER1_RESOLUTION * 8) {
 		clockSelectBits = _BV(CS11);
-		pwmPeriod = cycles / 8;
+    mult = 8;
 	} else
 	if (cycles < TIMER1_RESOLUTION * 64) {
 		clockSelectBits = _BV(CS11) | _BV(CS10);
-		pwmPeriod = cycles / 64;
+    mult = 64;
 	} else
 	if (cycles < TIMER1_RESOLUTION * 256) {
 		clockSelectBits = _BV(CS12);
-		pwmPeriod = cycles / 256;
+    mult = 256;
 	} else
 	if (cycles < TIMER1_RESOLUTION * 1024) {
 		clockSelectBits = _BV(CS12) | _BV(CS10);
-		pwmPeriod = cycles / 1024;
+    mult = 1024;
 	} else {
 		clockSelectBits = _BV(CS12) | _BV(CS10);
 		pwmPeriod = TIMER1_RESOLUTION - 1;
+    setPeriod = false;
 	}
+
+  if (setPeriod) {
+    pwmPeriod = cycles / mult;
+  }
 	ICR1 = pwmPeriod;
 	TCCR1B = _BV(WGM13) | clockSelectBits;
+    }
+
+    //****************************
+    //  Millis replacement
+    //****************************
+
+    static unsigned int subMillis(unsigned long count) __attribute__((always_inline)) {
+      const unsigned long cyclesPerMilli = F_CPU / 2E3L;
+      return count * mult / cyclesPerMilli;
+    }
+
+    static unsigned int subMicros(unsigned long count) __attribute__((always_inline)) {
+      //cycles = FCPU * micros / 2E6 / mult
+      //micros = mult * cycles * 2E6 / FCPU
+      //FCPU is on the order of 16E6.
+      //How do we do this without overflow and without underflow?
+      //Number ranges:
+      //TCNT1: 1 - 2^16
+      //mult value: 1 - 2^10
+      //2E6 (2 micros per second): 2^21
+      //F_CPU: 1E5 - 16E6 = 2^17 - 2^24
+      //We could do 64 bit multiplication but it's unnecessary. The code below should be accurate enough for most purposes
+      //Wrote this before I noticed the earlier condition that requires F_CPU > 2MHz.
+      #if F_CPU > 2000000
+      #if F_CPU % 2000000 != 0
+      #warning F_CPU not divisible by 2MHz, t1micros only guaranteed accurate to 1 part in 64.
+      #endif
+        constexpr unsigned long n64cyclesPerMicro = (1 << 6) * F_CPU / 2000000UL;
+        return (TCNT1 * mult << 6) / n64cyclesPerMicro;
+      #else
+      #if 2000000 % F_CPU != 0
+      #warning MHz not divisible by F_CPU, t1micros only guaranteed accurate to 1 part in 64.
+      #endif
+      constexpr unsigned long n64microsPerCycle = (1 << 6) * 2000000UL / F_CPU;
+      return (count * mult * n64microsPerCycle) >> 6;
+    #endif
+    }
+
+    static unsigned int millis() __attribute__((always_inline)) {
+      return baseMillis + subMillis(TCNT1);
+    }
+
+    static unsigned int micros() __attribute__((always_inline)) {
+      return baseMicros + subMicros(TCNT1);
     }
 
     //****************************
@@ -219,7 +274,7 @@ class TimerOne
     //****************************
     void start() __attribute__((always_inline)) {
 	TCCR1B = 0;
-	TCNT1 = 0;		// TODO: does this cause an undesired interrupt?
+	TCNT1 = 1;		// BS: Modified so it doesn't fire immediately.
 	resume();
     }
     void stop() __attribute__((always_inline)) {
@@ -276,6 +331,12 @@ class TimerOne
     //  Interrupt Function
     //****************************
 	
+    static void isrTick() __attribute__((always_inline)) {
+      baseMillis += subMillis(pwmPeriod);
+      baseMicros += subMicros(pwmPeriod);
+    }
+
+
     void attachInterrupt(void (*isr)()) __attribute__((always_inline)) {
 	isrCallback = isr;
 	TIMSK1 = _BV(TOIE1);
@@ -290,10 +351,13 @@ class TimerOne
     static void (*isrCallback)();
     static void isrDefaultUnused();
 
+
   private:
     // properties
     static unsigned short pwmPeriod;
+    static unsigned short mult;
     static unsigned char clockSelectBits;
+    static unsigned long baseMillis, baseMicros;
 
 
 
