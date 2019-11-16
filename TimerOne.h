@@ -177,6 +177,7 @@ class TimerOne
 #endif
 	
   public:
+    static constexpr unsigned long MaxMicros = (TIMER1_RESOLUTION - 1) * 1024 * 2000000 / F_CPU;
     //****************************
     //  Configuration
     //****************************
