@@ -20,6 +20,12 @@
 
 #define MICROS_PER_SECOND 1000000
 
+#if F_CPU < MICROS_PER_SECOND
+#error TimerOne requires F_CPU > 1Mhz
+#elif F_CPU % MICROS_PER_SECOND != 0
+#warn F_CPU is not divisible by 2Mhz, TimerOne accuracy doubtful
+#endif
+
 #if defined(ARDUINO) && ARDUINO >= 100
 #include "Arduino.h"
 #else
@@ -179,7 +185,7 @@ class TimerOne
 #endif
 	
   public:
-    static constexpr unsigned long MaxMicros = (TIMER1_RESOLUTION - 1) * 1024 * MICROS_PER_SECOND / F_CPU;
+    static constexpr unsigned long MaxMicros = (TIMER1_RESOLUTION - 1) * (MICROS_PER_SECOND * 1024 / F_CPU);
     //****************************
     //  Configuration
     //****************************
@@ -190,11 +196,6 @@ class TimerOne
 	setPeriod(microseconds);
     }
     void setPeriod(unsigned long microseconds) __attribute__((always_inline)) {
-#if F_CPU < MICROS_PER_SECOND
-#error TimerOne requires F_CPU > 2Mhz
-#elif F_CPU % MICROS_PER_SECOND != 0
-#warn F_CPU is not divisible by 2Mhz, TimerOne accuracy doubtful
-#endif
 	const unsigned long cycles = (F_CPU / MICROS_PER_SECOND) * microseconds;
   bool setPeriod = true;
 	if (cycles < TIMER1_RESOLUTION) {
@@ -234,7 +235,7 @@ class TimerOne
     //****************************
 
     static unsigned long subMillis(unsigned long count) __attribute__((always_inline)) {
-      const unsigned long cyclesPerMilli = F_CPU / 2000;
+      const unsigned long cyclesPerMilli = F_CPU / 1000;
       return count * mult / cyclesPerMilli;
     }
 
@@ -249,7 +250,7 @@ class TimerOne
       //2E6 (2 micros per second): 2^21
       //F_CPU: 1E5 - 16E6 = 2^17 - 2^24
       //We could do 64 bit multiplication but it's unnecessary. The code below should be accurate enough for most purposes
-      //Wrote this before I noticed the earlier condition that requires F_CPU > 2MHz.
+      //Wrote this before I noticed the earlier condition that requires F_CPU > 1MHz.
       #if F_CPU > MICROS_PER_SECOND
       #if F_CPU % MICROS_PER_SECOND != 0
       #warning F_CPU not divisible by 2MHz, t1micros only guaranteed accurate to 1 part in 64.
@@ -261,7 +262,7 @@ class TimerOne
       #if MICROS_PER_SECOND % F_CPU != 0
       #warning MHz not divisible by F_CPU, t1micros only guaranteed accurate to 1 part in 64.
       #endif
-      constexpr unsigned long n64microsPerCycle = (1 << 6) * MICROS_PER_SECONDUL / F_CPU;
+      constexpr unsigned long n64microsPerCycle = (1 << 6) * MICROS_PER_SECOND / F_CPU;
       return ((unsigned long)count * mult * n64microsPerCycle) >> 6;
     #endif
     }
